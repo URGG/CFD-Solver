@@ -1,137 +1,217 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <gsl/gsl_blas.h>
+#include <gsl/gsl_spmatrix.h>
 #include <gsl/gsl_vector.h>
+#include <gsl/gsl_splinalg.h>
+#include "raylib.h"
 
-#define NX 41
-#define NY 41
-#define DX (1.0 / (double)(NX - 1))
-#define DY (1.0 / (double)(NY - 1))
-#define DIFFUSIVITY 0.05
-#define SAFETY 0.20
-#define STEPS 800
-#define REPORT_EVERY 100
+#define NX 40
+#define NY 40
 
-typedef struct scalar_field {
-    double values[NX * NY];
-} scalar_field_t;
+#define IMAX (NX + 2)
+#define JMAX (NY + 2)
 
-static size_t cell_index(size_t i, size_t j) {
-    return j * NX + i;
+typedef struct {
+    double p[IMAX * JMAX];
+    double u[IMAX * JMAX];
+    double v[IMAX * JMAX];
+    double us[IMAX * JMAX];
+    double vs[IMAX * JMAX];
+} staggered_grid_t;
+
+static size_t IX(size_t i, size_t j) {
+    return j * IMAX + i;
 }
 
-static void field_fill(scalar_field_t *field, double value) {
-    for (size_t k = 0; k < NX * NY; ++k) {
-        field->values[k] = value;
+static size_t GSL_IX(size_t i, size_t j) {
+    return (j - 1) * NX + (i - 1);
+}
+
+static void apply_boundary_conditions(staggered_grid_t *grid) {
+    for (size_t j = 0; j < JMAX; ++j) {
+        grid->u[IX(1, j)] = 0.0;
+        grid->u[IX(NX + 1, j)] = 0.0;
+        grid->v[IX(0, j)] = -grid->v[IX(1, j)];
+        grid->v[IX(NX + 1, j)] = -grid->v[IX(NX, j)];
+
+        grid->us[IX(1, j)] = 0.0;
+        grid->us[IX(NX + 1, j)] = 0.0;
+    }
+    for (size_t i = 0; i < IMAX; ++i) {
+        grid->v[IX(i, 1)] = 0.0;
+        grid->v[IX(i, NY + 1)] = 0.0;
+        grid->u[IX(i, 0)] = -grid->u[IX(i, 1)];
+        grid->u[IX(i, NY + 1)] = 2.0 * 1.0 - grid->u[IX(i, NY)];
+
+        grid->vs[IX(i, 1)] = 0.0;
+        grid->vs[IX(i, NY + 1)] = 0.0;
     }
 }
 
-static void apply_boundary_conditions(scalar_field_t *field) {
-    for (size_t i = 0; i < NX; ++i) {
-        field->values[cell_index(i, 0)] = 0.0;
-        field->values[cell_index(i, NY - 1)] = 0.0;
+static void compute_tentative_velocity(staggered_grid_t *grid, double dt, double nu, double dx, double dy) {
+    const double dxi = 1.0 / dx;
+    const double dyi = 1.0 / dy;
+    const double dxi2 = dxi * dxi;
+    const double dyi2 = dyi * dyi;
+
+    for (size_t j = 1; j <= NY; ++j) {
+        for (size_t i = 2; i <= NX; ++i) {
+            double v_here = 0.25 * (grid->v[IX(i-1, j)] + grid->v[IX(i-1, j+1)] + grid->v[IX(i, j)] + grid->v[IX(i, j+1)]);
+            double u_center = grid->u[IX(i, j)];
+
+            double diff_x = nu * (grid->u[IX(i-1, j)] - 2.0 * u_center + grid->u[IX(i+1, j)]) * dxi2;
+            double diff_y = nu * (grid->u[IX(i, j-1)] - 2.0 * u_center + grid->u[IX(i, j+1)]) * dyi2;
+
+            double adv_x = u_center * (grid->u[IX(i+1, j)] - grid->u[IX(i-1, j)]) * 0.5 * dxi;
+            double adv_y = v_here * (grid->u[IX(i, j+1)] - grid->u[IX(i, j-1)]) * 0.5 * dyi;
+
+            grid->us[IX(i, j)] = u_center + dt * (diff_x + diff_y - adv_x - adv_y);
+        }
     }
 
-    for (size_t j = 0; j < NY; ++j) {
-        field->values[cell_index(0, j)] = 0.0;
-        field->values[cell_index(NX - 1, j)] = 0.0;
-    }
+    for (size_t j = 2; j <= NY; ++j) {
+        for (size_t i = 1; i <= NX; ++i) {
+            double u_here = 0.25 * (grid->u[IX(i, j-1)] + grid->u[IX(i, j)] + grid->u[IX(i+1, j-1)] + grid->u[IX(i+1, j)]);
+            double v_center = grid->v[IX(i, j)];
 
-    for (size_t j = NY / 3; j < (2 * NY) / 3; ++j) {
-        for (size_t i = NX / 3; i < (2 * NX) / 3; ++i) {
-            field->values[cell_index(i, j)] = 1.0;
+            double diff_x = nu * (grid->v[IX(i-1, j)] - 2.0 * v_center + grid->v[IX(i+1, j)]) * dxi2;
+            double diff_y = nu * (grid->v[IX(i, j-1)] - 2.0 * v_center + grid->v[IX(i, j+1)]) * dyi2;
+
+            double adv_x = u_here * (grid->v[IX(i+1, j)] - grid->v[IX(i-1, j)]) * 0.5 * dxi;
+            double adv_y = v_center * (grid->v[IX(i, j+1)] - grid->v[IX(i, j-1)]) * 0.5 * dyi;
+
+            grid->vs[IX(i, j)] = v_center + dt * (diff_x + diff_y - adv_x - adv_y);
         }
     }
 }
 
-static double compute_stable_dt(void) {
-    const double dx2 = DX * DX;
-    const double dy2 = DY * DY;
-    const double denom = 2.0 * DIFFUSIVITY * ((1.0 / dx2) + (1.0 / dy2));
+static void build_laplacian(gsl_spmatrix *A, double dx, double dy) {
+    double dxi2 = 1.0 / (dx * dx);
+    double dyi2 = 1.0 / (dy * dy);
 
-    return SAFETY / denom;
-}
+    for (size_t j = 1; j <= NY; ++j) {
+        for (size_t i = 1; i <= NX; ++i) {
+            size_t row = GSL_IX(i, j);
+            double diag = 0.0;
 
-static void diffuse_explicit(const scalar_field_t *current, scalar_field_t *next, double dt) {
-    const double inv_dx2 = 1.0 / (DX * DX);
-    const double inv_dy2 = 1.0 / (DY * DY);
+            if (i > 1) { gsl_spmatrix_set(A, row, GSL_IX(i - 1, j), -dxi2); diag += dxi2; }
+            if (i < NX) { gsl_spmatrix_set(A, row, GSL_IX(i + 1, j), -dxi2); diag += dxi2; }
+            if (j > 1) { gsl_spmatrix_set(A, row, GSL_IX(i, j - 1), -dyi2); diag += dyi2; }
+            if (j < NY) { gsl_spmatrix_set(A, row, GSL_IX(i, j + 1), -dyi2); diag += dyi2; }
 
-    *next = *current;
+            if (i == 1 && j == 1) {
+                diag = 1.0;
+                gsl_spmatrix_set(A, row, GSL_IX(i + 1, j), 0.0);
+                gsl_spmatrix_set(A, row, GSL_IX(i, j + 1), 0.0);
+            }
 
-    for (size_t j = 1; j < NY - 1; ++j) {
-        for (size_t i = 1; i < NX - 1; ++i) {
-            const size_t c = cell_index(i, j);
-            const double center = current->values[c];
-            const double laplacian_x =
-                (current->values[cell_index(i + 1, j)] - 2.0 * center + current->values[cell_index(i - 1, j)]) * inv_dx2;
-            const double laplacian_y =
-                (current->values[cell_index(i, j + 1)] - 2.0 * center + current->values[cell_index(i, j - 1)]) * inv_dy2;
-
-            next->values[c] = center + dt * DIFFUSIVITY * (laplacian_x + laplacian_y);
+            gsl_spmatrix_set(A, row, row, diag);
         }
     }
 }
 
-static double l2_change_norm(const scalar_field_t *a, const scalar_field_t *b) {
-    double delta[NX * NY];
+static void solve_pressure(staggered_grid_t *grid, gsl_spmatrix *A_csr, gsl_splinalg_itersolve *solver, double dt, double rho, double dx, double dy) {
+    gsl_vector *b = gsl_vector_alloc(NX * NY);
+    gsl_vector *x = gsl_vector_alloc(NX * NY);
 
-    for (size_t k = 0; k < NX * NY; ++k) {
-        delta[k] = b->values[k] - a->values[k];
+    for (size_t j = 1; j <= NY; ++j) {
+        for (size_t i = 1; i <= NX; ++i) {
+            size_t row = GSL_IX(i, j);
+            double div = ((grid->us[IX(i + 1, j)] - grid->us[IX(i, j)]) / dx) +
+                         ((grid->vs[IX(i, j + 1)] - grid->vs[IX(i, j)]) / dy);
+
+            gsl_vector_set(b, row, -(rho / dt) * div);
+            gsl_vector_set(x, row, grid->p[IX(i, j)]);
+        }
     }
 
-    gsl_vector_view delta_view = gsl_vector_view_array(delta, NX * NY);
-    return gsl_blas_dnrm2(&delta_view.vector);
-}
+    gsl_vector_set(b, GSL_IX(1, 1), 0.0);
 
-static double total_scalar(const scalar_field_t *field) {
-    double sum = 0.0;
+    int status;
+    do {
+        status = gsl_splinalg_itersolve_iterate(A_csr, b, 1e-5, x, solver);
+    } while (status == GSL_CONTINUE);
 
-    for (size_t k = 0; k < NX * NY; ++k) {
-        sum += field->values[k];
+    for (size_t j = 1; j <= NY; ++j) {
+        for (size_t i = 1; i <= NX; ++i) {
+            grid->p[IX(i, j)] = gsl_vector_get(x, GSL_IX(i, j));
+        }
     }
 
-    return sum * DX * DY;
+    gsl_vector_free(b);
+    gsl_vector_free(x);
 }
 
-static void print_centerline(const scalar_field_t *field) {
-    const size_t mid = NY / 2;
+static void apply_corrector(staggered_grid_t *grid, double dt, double rho, double dx, double dy) {
+    double dxi = 1.0 / dx;
+    double dyi = 1.0 / dy;
 
-    puts("\nCenterline sample (x, phi):");
-    for (size_t i = 0; i < NX; i += 5) {
-        const double x = i * DX;
-        const double phi = field->values[cell_index(i, mid)];
-        printf("  %.3f  %.6f\n", x, phi);
+    for (size_t j = 1; j <= NY; ++j) {
+        for (size_t i = 2; i <= NX; ++i) {
+            grid->u[IX(i, j)] = grid->us[IX(i, j)] - (dt / rho) * (grid->p[IX(i, j)] - grid->p[IX(i-1, j)]) * dxi;
+        }
+    }
+    for (size_t j = 2; j <= NY; ++j) {
+        for (size_t i = 1; i <= NX; ++i) {
+            grid->v[IX(i, j)] = grid->vs[IX(i, j)] - (dt / rho) * (grid->p[IX(i, j)] - grid->p[IX(i, j-1)]) * dyi;
+        }
     }
 }
 
 int main(void) {
-    scalar_field_t current;
-    scalar_field_t next;
-    const double dt = compute_stable_dt();
+    staggered_grid_t *grid = calloc(1, sizeof(staggered_grid_t));
 
-    field_fill(&current, 0.0);
-    apply_boundary_conditions(&current);
+    double dt = 0.001;
+    double rho = 1.0;
+    double nu = 0.01;
+    double dx = 1.0 / NX;
+    double dy = 1.0 / NY;
 
-    printf("CFD solver starter: 2D diffusion on a %dx%d grid\n", NX, NY);
-    printf("dx = %.6f, dy = %.6f, nu = %.6f, dt = %.6f\n", DX, DY, DIFFUSIVITY, dt);
+    gsl_spmatrix *A = gsl_spmatrix_alloc(NX * NY, NX * NY);
+    build_laplacian(A, dx, dy);
+    gsl_spmatrix *A_csr = gsl_spmatrix_crs(A);
+    gsl_splinalg_itersolve *solver = gsl_splinalg_itersolve_alloc(gsl_splinalg_itersolve_gmres, NX * NY, 0);
 
-    for (int step = 1; step <= STEPS; ++step) {
-        diffuse_explicit(&current, &next, dt);
-        apply_boundary_conditions(&next);
+    const int cellSize = 20;
+    InitWindow(NX * cellSize, NY * cellSize, "Navier-Stokes Lid-Driven Cavity");
+    SetTargetFPS(60);
 
-        if (step == 1 || step % REPORT_EVERY == 0 || step == STEPS) {
-            const double residual = l2_change_norm(&current, &next);
-            printf("step %4d  residual(L2) = %.10e  total_scalar = %.10f\n",
-                   step,
-                   residual,
-                   total_scalar(&next));
+    while (!WindowShouldClose()) {
+        for (int k = 0; k < 5; k++) {
+            apply_boundary_conditions(grid);
+            compute_tentative_velocity(grid, dt, nu, dx, dy);
+            apply_boundary_conditions(grid);
+            solve_pressure(grid, A_csr, solver, dt, rho, dx, dy);
+            apply_corrector(grid, dt, rho, dx, dy);
+            apply_boundary_conditions(grid);
         }
 
-        current = next;
+        BeginDrawing();
+        ClearBackground(BLACK);
+
+        for (size_t j = 1; j <= NY; ++j) {
+            for (size_t i = 1; i <= NX; ++i) {
+                double u_c = 0.5 * (grid->u[IX(i, j)] + grid->u[IX(i+1, j)]);
+                double v_c = 0.5 * (grid->v[IX(i, j)] + grid->v[IX(i, j+1)]);
+
+                double speed = sqrt(u_c * u_c + v_c * v_c);
+                if (speed > 1.0) speed = 1.0;
+
+                unsigned char c = (unsigned char)(speed * 255.0);
+                DrawRectangle((i - 1) * cellSize, (NY - j) * cellSize, cellSize, cellSize, (Color){c, c, 255, 255});
+            }
+        }
+
+        DrawFPS(10, 10);
+        EndDrawing();
     }
 
-    print_centerline(&current);
+    gsl_splinalg_itersolve_free(solver);
+    gsl_spmatrix_free(A_csr);
+    gsl_spmatrix_free(A);
+    free(grid);
+    CloseWindow();
 
     return EXIT_SUCCESS;
 }

@@ -5,16 +5,23 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 add_executable(CFDSolvers src/main.c)
-target_include_directories(CFDSolvers PRIVATE libraries/gsl/include)
+
+target_include_directories(CFDSolvers PRIVATE
+        libraries/gsl/include
+        libraries/raylib/include
+)
 
 if (WIN32)
     set(GSL_LOCAL_LIB_DIR "${CMAKE_SOURCE_DIR}/libraries/gsl/libwin")
+    set(RAYLIB_LOCAL_LIB_DIR "${CMAKE_SOURCE_DIR}/libraries/raylib/libwin")
 else ()
     set(GSL_LOCAL_LIB_DIR "${CMAKE_SOURCE_DIR}/libraries/gsl/liblnx")
+    set(RAYLIB_LOCAL_LIB_DIR "${CMAKE_SOURCE_DIR}/libraries/raylib/liblnx")
 endif ()
 
 find_library(GSL_LOCAL_LIBRARY NAMES gsl PATHS "${GSL_LOCAL_LIB_DIR}" NO_DEFAULT_PATH)
 find_library(GSL_LOCAL_CBLAS_LIBRARY NAMES gslcblas PATHS "${GSL_LOCAL_LIB_DIR}" NO_DEFAULT_PATH)
+find_library(RAYLIB_LOCAL_LIBRARY NAMES raylib PATHS "${RAYLIB_LOCAL_LIB_DIR}" NO_DEFAULT_PATH)
 
 if (GSL_LOCAL_LIBRARY AND GSL_LOCAL_CBLAS_LIBRARY)
     target_link_libraries(CFDSolvers PRIVATE "${GSL_LOCAL_LIBRARY}" "${GSL_LOCAL_CBLAS_LIBRARY}")
@@ -27,6 +34,12 @@ else ()
     endif ()
 endif ()
 
-if (NOT WIN32)
-    target_link_libraries(CFDSolvers PRIVATE m)
+if (RAYLIB_LOCAL_LIBRARY)
+    target_link_libraries(CFDSolvers PRIVATE "${RAYLIB_LOCAL_LIBRARY}")
+endif ()
+
+if (WIN32)
+    target_link_libraries(CFDSolvers PRIVATE opengl32 gdi32 winmm)
+else ()
+    target_link_libraries(CFDSolvers PRIVATE m GL pthread dl rt X11)
 endif ()
