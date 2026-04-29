@@ -1,0 +1,31 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 4,
+    "minor": 0,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-mingw-debug",
+      "displayName": "Windows MinGW Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-gsl",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "H:/CFDSolvers/toolchains/clion-mingw/bin/gcc.exe",
+        "CMAKE_MAKE_PROGRAM": "H:/CLion 2025.2.2/bin/ninja/win/x64/ninja.exe"
+      },
+      "environment": {
+        "PATH": "H:\\CFDSolvers\\toolchains\\clion-mingw\\bin;$penv{PATH}"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "build-windows-mingw-debug",
+      "configurePreset": "windows-mingw-debug",
+      "verbose": true
+    }
+  ]
+}

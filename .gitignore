@@ -1,0 +1,5 @@
+bin/
+cmake-build-gsl/
+cmake-build-debug/
+libraries/
+toolchains/
